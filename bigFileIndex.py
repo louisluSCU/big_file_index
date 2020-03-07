@@ -45,12 +45,10 @@ class IndexBuilder:
             if offset == self.tail:
                 self.tail += len(data)*6
             for item in data:
-                print(item)
                 fp.write((0).to_bytes(1, byteorder='big') + item)
         elif tuple == b'\x00\x00\x00\x00\x00\x00':
             fp.seek(-6, 1)
             for item in data:
-                print(item)
                 fp.write((0).to_bytes(1, byteorder='big') + item)
         else:
             fp.seek(-6, 1)
@@ -66,6 +64,7 @@ class IndexBuilder:
             # Real data tuple
             if number_dup == 0:
                 fp.seek(-5, 1)
+                # TODO: bug when duplicate > 1
                 fp.write(self.tail.to_bytes(5, byteorder='big'))
                 data.append(next_node)
                 self.__write_index(self.tail, data, fp)
@@ -81,14 +80,16 @@ class IndexBuilder:
             fp = io.BytesIO(file_slice)
 
             while True:
-                key_size = fp.read(KEY_SIZE_S)
-                if not key_size:
-                    break
-                # TODO: key = fp.read(int.from_bytes(key_size, byteorder='big'))
-                key = fp.read(int(key_size))
-
                 # Calculate offset in file
                 index = (SLICE_SIZE * counter + fp.tell()).to_bytes(5, byteorder='big')
+                key_size = fp.read(KEY_SIZE_S)
+
+                # End of this slice
+                if not key_size:
+                    break
+
+                # TODO: key = fp.read(int.from_bytes(key_size, byteorder='big'))
+                key = fp.read(int(key_size))
                 kv_pairs.append((key, index))
                 value_size = fp.read(VALUE_SIZE_S)
                 # TODO: fp.read(int.from_bytes(value_size, byteorder='big'))
@@ -104,15 +105,68 @@ class DataReader:
     def __init__(self):
         pass
 
-    def get(self, key):
+    def __search_index(self, offset, fp, dup=0):
+        fp.seek(offset * 6)
+        tuple = fp.read(6)
+
+        # Key not exist
+        if tuple in (b'\x00\x00\x00\x00\x00\x00', b''):
+            return []
+
+        else:
+            number_dup = int.from_bytes(tuple[0:1], byteorder='big')
+            values = []
+
+            # No duplicate
+            if number_dup == 0:
+                address = int.from_bytes(tuple[1:], byteorder='big')
+                values.append(address)
+                while dup != 0:
+                    next_tuple = fp.read(6)
+                    values.append(int.from_bytes(next_tuple[1:], byteorder='big'))
+                    dup -= 1
+
+            else:
+                if dup == 0:
+                    dup = number_dup
+                address = int.from_bytes(tuple[1:], byteorder='big')
+                values = self.__search_index(address, fp, dup)
+
+            return values
+
+    def __search_disk(self, key, offsets):
         value = None
 
+        if len(offsets) == 0:
+            return value
+
+        else:
+            fp = open(INPUT_FILE, 'rb')
+            # In case insertions of tuples with the same key, always return most recent one
+            offsets.sort(reverse=True)
+
+            # Check all possible keys
+            for offset in offsets:
+                fp.seek(offset)
+                key_size = fp.read(KEY_SIZE_S)
+                # TODO: key_candidate = fp.read(int.from_bytes(key_size, byteorder='big'))
+                key_candidate = fp.read(int(key_size))
+                if key_candidate == key:
+                    # TODO: value_size = int.from_bytes(fp.read(VALUE_SIZE_S), byteorder='big')
+                    value_size = int(fp.read(VALUE_SIZE_S))
+                    value = fp.read(value_size)
+                    break
+
+            fp.close()
+            return value
+
+    def get(self, key):
         if type(key) is not 'bytes':
             try:
                 key = key.encode('ascii')
             except:
                 print("Unsupported key type")
-                return value
+                return None
 
         h = hashlib.blake2b(digest_size=HASH_SIZE)
         h.update(key)
@@ -120,28 +174,10 @@ class DataReader:
 
         # Search index
         fp = open(INDEX_FILE, 'rb')
-        fp.seek(hash_v*6)
-        tuple = fp.read(6)
+        disk_pos = self.__search_index(hash_v, fp)
 
-        # Key not exist
-        if tuple in (b'\x00\x00\x00\x00\x00\x00', b''):
-            pass
-
-        else:
-            partial_key = tuple[0:1]
-
-            # No duplicate
-            if partial_key == (0).to_bytes(1, byteorder='big'):
-                offset = int.from_bytes(tuple[1:], byteorder='big')
-
-                fp = open(INPUT_FILE, 'r')
-                fp.seek(offset)
-                value_size = int(fp.read(VALUE_SIZE_S))
-                value = fp.read(value_size)
-                fp.close()
-            # TODO: Linear probe
-            else:
-                pass
+        # Find value
+        value = self.__search_disk(key, disk_pos)
 
         fp.close()
         return value
@@ -154,4 +190,4 @@ if __name__ == "__main__":
     fib = IndexBuilder()
     fib.build()
     fr = DataReader()
-    print(fr.get('AAA'))
+    print(fr.get('CC'))
