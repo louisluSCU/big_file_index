@@ -61,17 +61,16 @@ class IndexBuilder:
             fp.write((number_dup + 1).to_bytes(1, byteorder='big'))
             next_node = fp.read(5)
 
-            # Real data tuple
+            # Data tuple
             if number_dup == 0:
                 fp.seek(-5, 1)
-                # TODO: bug when duplicate > 1
                 fp.write(self.tail.to_bytes(5, byteorder='big'))
                 data.append(next_node)
                 self.__write_index(self.tail, data, fp)
 
             # Index tuple
             else:
-                self.__write_index(next_node, data, fp)
+                self.__write_index(int.from_bytes(next_node, byteorder='big'), data, fp)
 
     def build(self):
         counter = 0
