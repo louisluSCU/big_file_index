@@ -37,10 +37,11 @@ class IndexBuilder:
             self.__write_index(hash_v, [item[1],], fp)
         fp.close()
 
-    def __write_index(self, offset, data, fp):
+    def __write_index(self, offset, data, fp, dup=0):
         fp.seek(offset*6)
         tuple = fp.read(6)
 
+        # No conflict
         if tuple == b'':
             if offset == self.tail:
                 self.tail += len(data)*6
@@ -50,12 +51,18 @@ class IndexBuilder:
             fp.seek(-6, 1)
             for item in data:
                 fp.write((0).to_bytes(1, byteorder='big') + item)
+
+        # Hash conflict
         else:
             fp.seek(-6, 1)
             number_dup = int.from_bytes(fp.read(1), byteorder='big')
 
             if number_dup == 255:
                 raise OverflowError
+
+            # Record number of tuples to be moved
+            if dup == 0:
+                dup = number_dup
 
             fp.seek(-1, 1)
             fp.write((number_dup + 1).to_bytes(1, byteorder='big'))
@@ -66,11 +73,15 @@ class IndexBuilder:
                 fp.seek(-5, 1)
                 fp.write(self.tail.to_bytes(5, byteorder='big'))
                 data.append(next_node)
+                while dup > 0:
+                    fp.read(1)
+                    data.append(fp.read(5))
+                    dup -= 1
                 self.__write_index(self.tail, data, fp)
 
             # Index tuple
             else:
-                self.__write_index(int.from_bytes(next_node, byteorder='big'), data, fp)
+                self.__write_index(int.from_bytes(next_node, byteorder='big'), data, fp, dup)
 
     def build(self):
         counter = 0
@@ -116,15 +127,16 @@ class DataReader:
             number_dup = int.from_bytes(tuple[0:1], byteorder='big')
             values = []
 
-            # No duplicate
+            # No conflict
             if number_dup == 0:
                 address = int.from_bytes(tuple[1:], byteorder='big')
                 values.append(address)
-                while dup != 0:
+                while dup > 0:
                     next_tuple = fp.read(6)
                     values.append(int.from_bytes(next_tuple[1:], byteorder='big'))
                     dup -= 1
 
+            # Hash conflict
             else:
                 if dup == 0:
                     dup = number_dup
