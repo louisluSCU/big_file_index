@@ -9,12 +9,16 @@ KEY_SIZE_S = 2
 VALUE_SIZE_S = 2
 # TODO: HASH_SIZE = 4
 HASH_SIZE = 1
+# TODO: string replace
+CPU_ENDIAN = 'big'
 
 
 class IndexBuilder:
 
-    def __init__(self):
+    def __init__(self, compaction_thred=2**20):
         self.tail = 2**(HASH_SIZE*8)*6
+        self.compaction_thred = compaction_thred
+        self.garbage_tuple = 0
 
     # Read 2GB data at a time
     def __read_file_slice(self):
@@ -33,11 +37,15 @@ class IndexBuilder:
             h = hashlib.blake2b(digest_size=HASH_SIZE)
             h.update(item[0])
             hash_v = int(h.hexdigest(), 16)
-            print(hash_v)
             self.__write_index(hash_v, [item[1],], fp)
         fp.close()
 
-    def __write_index(self, offset, data, fp, dup=0):
+        # Check size of garbage tuples
+        if self.garbage_tuple > self.compaction_thred:
+            self.index_compaction()
+        print(self.garbage_tuple)
+
+    def __write_index(self, offset, data, fp):
         fp.seek(offset*6)
         tuple = fp.read(6)
 
@@ -57,31 +65,37 @@ class IndexBuilder:
             fp.seek(-6, 1)
             number_dup = int.from_bytes(fp.read(1), byteorder='big')
 
-            if number_dup == 255:
+            if number_dup == 254:
                 raise OverflowError
-
-            # Record number of tuples to be moved
-            if dup == 0:
-                dup = number_dup
 
             fp.seek(-1, 1)
             fp.write((number_dup + 1).to_bytes(1, byteorder='big'))
-            next_node = fp.read(5)
 
             # Data tuple
             if number_dup == 0:
+                data.append(fp.read(5))
                 fp.seek(-5, 1)
                 fp.write(self.tail.to_bytes(5, byteorder='big'))
-                data.append(next_node)
-                while dup > 0:
-                    fp.read(1)
-                    data.append(fp.read(5))
-                    dup -= 1
-                self.__write_index(self.tail, data, fp)
 
             # Index tuple
             else:
-                self.__write_index(int.from_bytes(next_node, byteorder='big'), data, fp, dup)
+                next_node = fp.read(5)
+                fp.seek(-5, 1)
+                fp.write(self.tail.to_bytes(5, byteorder='big'))
+                fp.seek(int.from_bytes(next_node, byteorder='big')*6)
+
+                for i in range(number_dup+1):
+                    fp.write((255).to_bytes(1, byteorder='big'))
+                    data.append(fp.read(5))
+
+                # Count garbage tuple
+                self.garbage_tuple += number_dup+1
+
+            self.__write_index(self.tail, data, fp)
+
+    # TODO
+    def index_compaction(self):
+        pass
 
     def build(self):
         counter = 0
@@ -186,15 +200,13 @@ class DataReader:
         # Search index
         fp = open(INDEX_FILE, 'rb')
         disk_pos = self.__search_index(hash_v, fp)
+        print(disk_pos)
 
         # Find value
         value = self.__search_disk(key, disk_pos)
 
         fp.close()
         return value
-
-
-
 
 
 if __name__ == "__main__":
