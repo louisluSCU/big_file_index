@@ -15,10 +15,9 @@ CPU_ENDIAN = 'big'
 
 class IndexBuilder:
 
-    def __init__(self, compaction_thred=2**20):
+    def __init__(self):
+        self.table_size = 2**(HASH_SIZE*8)*6
         self.tail = 2**(HASH_SIZE*8)*6
-        self.compaction_thred = compaction_thred
-        self.garbage_tuple = 0
 
     # Read 2GB data at a time
     def __read_file_slice(self):
@@ -37,16 +36,11 @@ class IndexBuilder:
             h = hashlib.blake2b(digest_size=HASH_SIZE)
             h.update(item[0])
             hash_v = int(h.hexdigest(), 16)
-            self.__write_index(hash_v, [item[1],], fp)
+            self.__write_index(hash_v*6, [item[1], ], fp)
         fp.close()
 
-        # Check size of garbage tuples
-        if self.garbage_tuple > self.compaction_thred:
-            self.index_compaction()
-        print(self.garbage_tuple)
-
     def __write_index(self, offset, data, fp):
-        fp.seek(offset*6)
+        fp.seek(offset)
         tuple = fp.read(6)
 
         # No conflict
@@ -54,10 +48,12 @@ class IndexBuilder:
             if offset == self.tail:
                 self.tail += len(data)*6
             for item in data:
+                # print('write {} at {}'.format(str(str(item)), fp.tell()))
                 fp.write((0).to_bytes(1, byteorder='big') + item)
         elif tuple == b'\x00\x00\x00\x00\x00\x00':
             fp.seek(-6, 1)
             for item in data:
+                # print('write {} at {}'.format(str(str(item)), fp.tell()))
                 fp.write((0).to_bytes(1, byteorder='big') + item)
 
         # Hash conflict
@@ -82,20 +78,13 @@ class IndexBuilder:
                 next_node = fp.read(5)
                 fp.seek(-5, 1)
                 fp.write(self.tail.to_bytes(5, byteorder='big'))
-                fp.seek(int.from_bytes(next_node, byteorder='big')*6)
+                fp.seek(int.from_bytes(next_node, byteorder='big'))
 
                 for i in range(number_dup+1):
                     fp.write((255).to_bytes(1, byteorder='big'))
                     data.append(fp.read(5))
 
-                # Count garbage tuple
-                self.garbage_tuple += number_dup+1
-
             self.__write_index(self.tail, data, fp)
-
-    # TODO
-    def index_compaction(self):
-        pass
 
     def build(self):
         counter = 0
@@ -124,13 +113,65 @@ class IndexBuilder:
             self.__add_index(kv_pairs)
             counter += 1
 
+        # Index file compaction
+        self.index_compaction()
+
+    def index_compaction(self):
+        # Temp file for middle result
+        middle = open('middle.log', 'wb+')
+        index = open(INDEX_FILE, 'rb+')
+
+        # Update linked list
+        counter = 0
+        index.seek(self.table_size)
+        while index.tell() < self.tail:
+            flag = index.read(1)
+
+            # Garbage tuple
+            if int.from_bytes(flag, byteorder='big') == 255:
+                counter += 1
+                index.read(5)
+
+            # Data tuple
+            else:
+                index.seek(-1, 1)
+
+                middle.seek(index.tell()-self.table_size)
+                middle.write(counter.to_bytes(5, byteorder='big'))
+                # print('write offset {} at {} in middle file'.format(str(counter), str(index.tell()-self.table_size)))
+
+                data = index.read(6)
+                index.seek(-(counter+1)*6, 1)
+                index.write((0).to_bytes(1, byteorder='big')+data[1:])
+                index.seek(counter*6, 1)
+
+        # Update hash table
+        index.seek(0)
+        while index.tell() < self.table_size:
+            flag = index.read(1)
+
+            # Conflict
+            if int.from_bytes(flag, byteorder='big') != 0:
+                old_pos = int.from_bytes(index.read(5), byteorder='big')
+                middle.seek(old_pos-self.table_size)
+                offset = int.from_bytes(middle.read(5), byteorder='big')
+                new_pos = old_pos - offset*6
+                index.seek(-5, 1)
+                index.write(new_pos.to_bytes(5, byteorder='big'))
+            else:
+                index.read(5)
+
+        self.tail -= counter*6
+        print('{} bytes of space saved, tail now at {}'.format(str(counter*6), str(self.tail)))
+
+
 
 class DataReader:
     def __init__(self):
         pass
 
     def __search_index(self, offset, fp, dup=0):
-        fp.seek(offset * 6)
+        fp.seek(offset)
         tuple = fp.read(6)
 
         # Key not exist
@@ -199,7 +240,7 @@ class DataReader:
 
         # Search index
         fp = open(INDEX_FILE, 'rb')
-        disk_pos = self.__search_index(hash_v, fp)
+        disk_pos = self.__search_index(hash_v*6, fp)
         print(disk_pos)
 
         # Find value
@@ -213,4 +254,4 @@ if __name__ == "__main__":
     fib = IndexBuilder()
     fib.build()
     fr = DataReader()
-    print(fr.get('CC'))
+    print(fr.get('AAA'))
