@@ -1,4 +1,5 @@
 import io
+import os
 import hashlib
 
 
@@ -7,9 +8,7 @@ INDEX_FILE = 'index.log'
 SLICE_SIZE = 2**30
 KEY_SIZE_S = 2
 VALUE_SIZE_S = 2
-# TODO: HASH_SIZE = 4
-HASH_SIZE = 1
-# TODO: string replace
+HASH_SIZE = 4
 CPU_ENDIAN = 'big'
 
 
@@ -23,7 +22,6 @@ class IndexBuilder:
     def __read_file_slice(self):
         fp = open(INPUT_FILE, 'rb')
         while True:
-            # TODO: read cross slice tuple
             slice_data = fp.read(SLICE_SIZE)
             if not slice_data:
                 break
@@ -49,39 +47,39 @@ class IndexBuilder:
                 self.tail += len(data)*6
             for item in data:
                 # print('write {} at {}'.format(str(str(item)), fp.tell()))
-                fp.write((0).to_bytes(1, byteorder='big') + item)
+                fp.write((0).to_bytes(1, byteorder=CPU_ENDIAN) + item)
         elif tuple == b'\x00\x00\x00\x00\x00\x00':
             fp.seek(-6, 1)
             for item in data:
                 # print('write {} at {}'.format(str(str(item)), fp.tell()))
-                fp.write((0).to_bytes(1, byteorder='big') + item)
+                fp.write((0).to_bytes(1, byteorder=CPU_ENDIAN) + item)
 
         # Hash conflict
         else:
             fp.seek(-6, 1)
-            number_dup = int.from_bytes(fp.read(1), byteorder='big')
+            number_dup = int.from_bytes(fp.read(1), byteorder=CPU_ENDIAN)
 
             if number_dup == 254:
                 raise OverflowError
 
             fp.seek(-1, 1)
-            fp.write((number_dup + 1).to_bytes(1, byteorder='big'))
+            fp.write((number_dup + 1).to_bytes(1, byteorder=CPU_ENDIAN))
 
             # Data tuple
             if number_dup == 0:
                 data.append(fp.read(5))
                 fp.seek(-5, 1)
-                fp.write(self.tail.to_bytes(5, byteorder='big'))
+                fp.write(self.tail.to_bytes(5, byteorder=CPU_ENDIAN))
 
             # Index tuple
             else:
                 next_node = fp.read(5)
                 fp.seek(-5, 1)
-                fp.write(self.tail.to_bytes(5, byteorder='big'))
-                fp.seek(int.from_bytes(next_node, byteorder='big'))
+                fp.write(self.tail.to_bytes(5, byteorder=CPU_ENDIAN))
+                fp.seek(int.from_bytes(next_node, byteorder=CPU_ENDIAN))
 
                 for i in range(number_dup+1):
-                    fp.write((255).to_bytes(1, byteorder='big'))
+                    fp.write((255).to_bytes(1, byteorder=CPU_ENDIAN))
                     data.append(fp.read(5))
 
             self.__write_index(self.tail, data, fp)
@@ -94,19 +92,17 @@ class IndexBuilder:
 
             while True:
                 # Calculate offset in file
-                index = (SLICE_SIZE * counter + fp.tell()).to_bytes(5, byteorder='big')
+                index = (SLICE_SIZE * counter + fp.tell()).to_bytes(5, byteorder=CPU_ENDIAN)
                 key_size = fp.read(KEY_SIZE_S)
 
                 # End of this slice
                 if not key_size:
                     break
 
-                # TODO: key = fp.read(int.from_bytes(key_size, byteorder='big'))
-                key = fp.read(int(key_size))
+                key = fp.read(int.from_bytes(key_size, byteorder=CPU_ENDIAN))
                 kv_pairs.append((key, index))
                 value_size = fp.read(VALUE_SIZE_S)
-                # TODO: fp.read(int.from_bytes(value_size, byteorder='big'))
-                fp.read(int(value_size))
+                fp.read(int.from_bytes(value_size, byteorder=CPU_ENDIAN))
 
             fp.close()
             print(kv_pairs)
@@ -128,7 +124,7 @@ class IndexBuilder:
             flag = index.read(1)
 
             # Garbage tuple
-            if int.from_bytes(flag, byteorder='big') == 255:
+            if int.from_bytes(flag, byteorder=CPU_ENDIAN) == 255:
                 counter += 1
                 index.read(5)
 
@@ -137,12 +133,12 @@ class IndexBuilder:
                 index.seek(-1, 1)
 
                 middle.seek(index.tell()-self.table_size)
-                middle.write(counter.to_bytes(5, byteorder='big'))
+                middle.write(counter.to_bytes(5, byteorder=CPU_ENDIAN))
                 # print('write offset {} at {} in middle file'.format(str(counter), str(index.tell()-self.table_size)))
 
                 data = index.read(6)
                 index.seek(-(counter+1)*6, 1)
-                index.write((0).to_bytes(1, byteorder='big')+data[1:])
+                index.write((0).to_bytes(1, byteorder=CPU_ENDIAN)+data[1:])
                 index.seek(counter*6, 1)
 
         # Update hash table
@@ -151,15 +147,20 @@ class IndexBuilder:
             flag = index.read(1)
 
             # Conflict
-            if int.from_bytes(flag, byteorder='big') != 0:
-                old_pos = int.from_bytes(index.read(5), byteorder='big')
+            if int.from_bytes(flag, byteorder=CPU_ENDIAN) != 0:
+                old_pos = int.from_bytes(index.read(5), byteorder=CPU_ENDIAN)
                 middle.seek(old_pos-self.table_size)
-                offset = int.from_bytes(middle.read(5), byteorder='big')
+                offset = int.from_bytes(middle.read(5), byteorder=CPU_ENDIAN)
                 new_pos = old_pos - offset*6
                 index.seek(-5, 1)
-                index.write(new_pos.to_bytes(5, byteorder='big'))
+                index.write(new_pos.to_bytes(5, byteorder=CPU_ENDIAN))
             else:
                 index.read(5)
+
+        # delete middle
+        middle.close()
+        os.remove('middle.log')
+        index.close()
 
         self.tail -= counter*6
         print('{} bytes of space saved, tail now at {}'.format(str(counter*6), str(self.tail)))
@@ -179,23 +180,23 @@ class DataReader:
             return []
 
         else:
-            number_dup = int.from_bytes(tuple[0:1], byteorder='big')
+            number_dup = int.from_bytes(tuple[0:1], byteorder=CPU_ENDIAN)
             values = []
 
             # No conflict
             if number_dup == 0:
-                address = int.from_bytes(tuple[1:], byteorder='big')
+                address = int.from_bytes(tuple[1:], byteorder=CPU_ENDIAN)
                 values.append(address)
                 while dup > 0:
                     next_tuple = fp.read(6)
-                    values.append(int.from_bytes(next_tuple[1:], byteorder='big'))
+                    values.append(int.from_bytes(next_tuple[1:], byteorder=CPU_ENDIAN))
                     dup -= 1
 
             # Hash conflict
             else:
                 if dup == 0:
                     dup = number_dup
-                address = int.from_bytes(tuple[1:], byteorder='big')
+                address = int.from_bytes(tuple[1:], byteorder=CPU_ENDIAN)
                 values = self.__search_index(address, fp, dup)
 
             return values
@@ -215,11 +216,9 @@ class DataReader:
             for offset in offsets:
                 fp.seek(offset)
                 key_size = fp.read(KEY_SIZE_S)
-                # TODO: key_candidate = fp.read(int.from_bytes(key_size, byteorder='big'))
-                key_candidate = fp.read(int(key_size))
+                key_candidate = fp.read(int.from_bytes(key_size, byteorder=CPU_ENDIAN))
                 if key_candidate == key:
-                    # TODO: value_size = int.from_bytes(fp.read(VALUE_SIZE_S), byteorder='big')
-                    value_size = int(fp.read(VALUE_SIZE_S))
+                    value_size = int.from_bytes(fp.read(VALUE_SIZE_S), byteorder=CPU_ENDIAN)
                     value = fp.read(value_size)
                     break
 
@@ -254,4 +253,4 @@ if __name__ == "__main__":
     fib = IndexBuilder()
     fib.build()
     fr = DataReader()
-    print(fr.get('AAA'))
+    print(fr.get('LUYE'))
